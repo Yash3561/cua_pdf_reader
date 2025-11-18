@@ -26,40 +26,68 @@ class CUAApp:
         
         print("✅ CUA App initialized")
     
-    def process_frame_from_upload(self, image):
+    def process_frame_from_upload(self, image, full_page_mode=False):
         """Process an uploaded image (for testing without WebRTC)."""
         if image is None:
             return "No image provided", None
         
         try:
             # Process with VLM
-            self.extracted_content = self.vlm.process_frame(image)
+            print(f"🔍 Processing image (full_page={full_page_mode})...")
+            self.extracted_content = self.vlm.process_frame(image, full_page=full_page_mode)
             self.current_frame = image
             
             # Format output
-            output = "=== Extracted Content ===\n\n"
+            output = "=== 📄 EXTRACTED CONTENT ===\n\n"
             
+            # Text section
+            output += "📝 **TEXT:**\n"
             if self.extracted_content.get('text'):
-                output += f"Text:\n{self.extracted_content['text']}\n\n"
+                text = self.extracted_content['text']
+                output += f"{text}\n\n"
+                output += f"[{len(text)} characters extracted]\n\n"
             else:
                 output += "No text detected\n\n"
             
-            if self.extracted_content.get('tables'):
-                output += f"Tables detected: {len(self.extracted_content['tables'])}\n"
+            # Tables
+            tables = self.extracted_content.get('tables', [])
+            output += f"📊 **TABLES:** {len(tables)}\n"
+            if tables:
+                for i, table in enumerate(tables):
+                    output += f"  • Table {i+1} at position {table.get('bbox')}\n"
+            output += "\n"
             
-            if self.extracted_content.get('figures'):
-                output += f"Figures detected: {len(self.extracted_content['figures'])}\n"
+            # Figures
+            figures = self.extracted_content.get('figures', [])
+            output += f"🖼️ **FIGURES:** {len(figures)}\n"
+            if figures:
+                for i, fig in enumerate(figures):
+                    output += f"  • Figure {i+1} (area: {fig.get('area')}px²)\n"
+            output += "\n"
+            
+            # Highlights
+            highlights = self.extracted_content.get('highlights', {})
+            yellow_count = len(highlights.get('yellow', []))
+            purple_count = len(highlights.get('purple', []))
+            output += f"🎨 **HIGHLIGHTS:**\n"
+            output += f"  • Yellow: {yellow_count}\n"
+            output += f"  • Purple: {purple_count}\n"
             
             # Store in database
             self.db.store_extracted_content({
                 "content": self.extracted_content,
-                "image_size": self.extracted_content.get('image_size')
+                "full_page_mode": full_page_mode
             })
             
+            print("✅ Processing complete!")
             return output, image
         
         except Exception as e:
-            return f"Error processing frame: {str(e)}", None
+            error_msg = f"❌ Error: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            return error_msg, None
     
     async def ask_question(self, question: str, history):
         """Process a question using the agent."""
@@ -152,10 +180,13 @@ def create_ui():
                     outputs=paper_status
                 )
             
-            # Tab 2: Screen Capture (Test Mode)
+           # Tab 2: Screen Capture (Test Mode)
             with gr.Tab("📸 Screen Capture (Test Mode)"):
                 gr.Markdown("""
                 ### Upload a PDF screenshot for testing
+                - **Zoomed text**: Upload close-up of specific paragraphs
+                - **Full page**: Upload entire page (will auto-split into regions)
+                
                 In production, this will capture from WebRTC screen sharing.
                 """)
                 
@@ -164,6 +195,10 @@ def create_ui():
                         image_input = gr.Image(
                             label="Upload PDF Screenshot",
                             type="numpy"
+                        )
+                        full_page_mode = gr.Checkbox(
+                            label="Full Page Mode (split into regions for better OCR)",
+                            value=False
                         )
                         process_btn = gr.Button("Process Image", variant="primary")
                     
@@ -175,9 +210,12 @@ def create_ui():
                         )
                         processed_image = gr.Image(label="Processed Image")
                 
+                def process_with_mode(image, full_page):
+                    return app.process_frame_from_upload(image, full_page)
+                
                 process_btn.click(
-                    fn=app.process_frame_from_upload,
-                    inputs=image_input,
+                    fn=process_with_mode,
+                    inputs=[image_input, full_page_mode],
                     outputs=[extracted_output, processed_image]
                 )
             
