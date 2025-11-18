@@ -1,0 +1,25 @@
+# Virtual environments
+venv/
+.env/
+*.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Gradio/cache logs
+.gradio/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+*.log
+
+# Optional: model or large data folders
+data/
+models/

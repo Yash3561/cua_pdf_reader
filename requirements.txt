@@ -1,0 +1,35 @@
+# Core frameworks
+gradio>=4.0.0
+pydantic-ai>=0.0.14
+pydantic>=2.0.0
+
+# ML libraries (PyTorch already installed with CUDA)
+transformers>=4.40.0
+pillow>=10.0.0
+accelerate>=0.25.0
+bitsandbytes>=0.41.0
+
+# WebRTC and video
+aiortc>=1.6.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+av>=10.0.0
+
+# LLM integration
+ollama>=0.1.0
+
+# Database
+pymongo>=4.6.0
+
+# Web search
+requests>=2.31.0
+
+# Utilities
+python-dotenv>=1.0.0
+aiohttp>=3.9.0
+asyncio>=3.4.3
+
+einops
+timm
+hf_ext
+pytesseract
