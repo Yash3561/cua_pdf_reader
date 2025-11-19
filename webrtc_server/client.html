@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CUA WebRTC Screen Share</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .container {
+            background: #2a2a2a;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #8b5cf6;
+            margin-bottom: 10px;
+        }
+        .status {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+            background: #333;
+        }
+        .status.connected {
+            background: #065f46;
+            color: #d1fae5;
+        }
+        .status.disconnected {
+            background: #7f1d1d;
+            color: #fecaca;
+        }
+        button {
+            background: #8b5cf6;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #7c3aed;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        #localVideo {
+            width: 100%;
+            max-width: 600px;
+            margin: 20px 0;
+            border: 2px solid #8b5cf6;
+            border-radius: 5px;
+        }
+        .instructions {
+            background: #1e3a5f;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .instructions ol {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .instructions li {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📹 CUA WebRTC Screen Share</h1>
+        <p>Share your screen with the CUA PDF Reader agent</p>
+        
+        <div id="status" class="status disconnected">
+            Status: Not connected
+        </div>
+        
+        <div class="instructions">
+            <h3>Instructions:</h3>
+            <ol>
+                <li>Click "Start Screen Share" below</li>
+                <li>Select the window/tab you want to share (your PDF viewer)</li>
+                <li>Click "Share" in the browser dialog</li>
+                <li>Wait for connection status to show "Connected"</li>
+                <li>Go back to Gradio UI and click "Capture Latest Frame"</li>
+            </ol>
+        </div>
+        
+        <button id="startBtn" onclick="startScreenShare()">Start Screen Share</button>
+        <button id="stopBtn" onclick="stopScreenShare()" disabled>Stop Sharing</button>
+        
+        <video id="localVideo" autoplay muted playsinline></video>
+        
+        <div id="info" style="margin-top: 20px; color: #aaa;">
+            <p><strong>Signaling Server:</strong> <span id="serverUrl">http://localhost:8080</span></p>
+            <p><strong>Connection:</strong> <span id="connectionState">Not connected</span></p>
+        </div>
+    </div>
+
+    <script>
+        let pc = null;
+        let localStream = null;
+        const SIGNALING_SERVER = 'http://localhost:8080';
+        
+        // Update server URL if needed
+        const urlParams = new URLSearchParams(window.location.search);
+        const serverUrl = urlParams.get('server') || SIGNALING_SERVER;
+        document.getElementById('serverUrl').textContent = serverUrl;
+        
+        async function startScreenShare() {
+            try {
+                // Get screen share stream
+                localStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { 
+                        cursor: "always",
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    },
+                    audio: false
+                });
+                
+                // Show preview
+                const video = document.getElementById('localVideo');
+                video.srcObject = localStream;
+                
+                // Create peer connection
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' }
+                    ]
+                });
+                
+                // Add tracks to peer connection
+                localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, localStream);
+                });
+                
+                // Handle ICE candidates
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        console.log('ICE candidate:', event.candidate);
+                    }
+                };
+                
+                // Handle connection state changes
+                pc.onconnectionstatechange = () => {
+                    const state = pc.connectionState;
+                    document.getElementById('connectionState').textContent = state;
+                    updateStatus(state === 'connected' || state === 'connecting');
+                };
+                
+                // Create and send offer
+                const offer = await pc.createOffer({
+                    offerToReceiveVideo: false,
+                    offerToReceiveAudio: false
+                });
+                
+                await pc.setLocalDescription(offer);
+                
+                // Send offer to signaling server
+                const response = await fetch(`${serverUrl}/offer`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sdp: offer.sdp,
+                        type: offer.type
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Signaling server error: ${response.statusText}`);
+                }
+                
+                const answer = await response.json();
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                
+                // Update UI
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                updateStatus(true);
+                
+                // Handle stream end
+                localStream.getVideoTracks()[0].onended = () => {
+                    stopScreenShare();
+                };
+                
+            } catch (error) {
+                console.error('Error starting screen share:', error);
+                alert('Error: ' + error.message);
+                updateStatus(false);
+            }
+        }
+        
+        function stopScreenShare() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            
+            const video = document.getElementById('localVideo');
+            video.srcObject = null;
+            
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            updateStatus(false);
+        }
+        
+        function updateStatus(connected) {
+            const statusDiv = document.getElementById('status');
+            if (connected) {
+                statusDiv.className = 'status connected';
+                statusDiv.textContent = 'Status: ✅ Connected - Screen sharing active';
+            } else {
+                statusDiv.className = 'status disconnected';
+                statusDiv.textContent = 'Status: ❌ Not connected';
+            }
+        }
+        
+        // Check signaling server on load
+        window.addEventListener('load', async () => {
+            try {
+                const response = await fetch(`${serverUrl}/health`);
+                if (response.ok) {
+                    console.log('Signaling server is reachable');
+                } else {
+                    console.warn('Signaling server returned error');
+                }
+            } catch (error) {
+                console.error('Cannot reach signaling server:', error);
+                document.getElementById('status').textContent = 
+                    'Status: ⚠️ Cannot connect to signaling server. Make sure it\'s running on ' + serverUrl;
+            }
+        });
+    </script>
+</body>
+</html>
+

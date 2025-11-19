@@ -21,6 +21,7 @@ class CUADependencies(BaseModel):
     current_paper_title: Optional[str] = None
     extracted_content: Dict = Field(default_factory=dict)
     conversation_history: List[Dict] = Field(default_factory=list)
+    current_image: Optional[object] = None  # Store PIL Image for diagram parsing
 
 
 SYSTEM_PROMPT = """You are a Computer Using Agent (CUA) specialized in helping users understand academic papers in AI.
@@ -46,15 +47,17 @@ If the user asks you to search for papers or get paper information, let them kno
 class CUAAgent:
     """Main CUA Agent using Ollama."""
     
-    def __init__(self, model_name: str = "qwen2.5:3b"):
+    def __init__(self, model_name: str = "qwen2.5:3b", vlm_processor=None):
         self.model_name = model_name
         self.deps = CUADependencies()
         self.system_prompt = SYSTEM_PROMPT
+        self.vlm = vlm_processor  # Store VLM processor for diagram parsing
     
     async def process_query(
         self,
         query: str,
-        extracted_content: Optional[Dict] = None
+        extracted_content: Optional[Dict] = None,
+        current_image: Optional[object] = None
     ) -> str:
         """
         Process a user query using the agent.
@@ -62,6 +65,7 @@ class CUAAgent:
         Args:
             query: User's question
             extracted_content: Content extracted from screen by VLM
+            current_image: PIL Image for diagram parsing (optional)
         
         Returns:
             Agent's response
@@ -69,6 +73,8 @@ class CUAAgent:
         # Update extracted content if provided
         if extracted_content:
             self.deps.extracted_content = extracted_content
+        if current_image is not None:
+            self.deps.current_image = current_image
         
         # Check if query involves tool usage
         response = await self._handle_query_with_tools(query)
@@ -145,9 +151,252 @@ class CUAAgent:
             logger.error(f"Agent processing error: {e}")
             return f"I apologize, but I encountered an error: {str(e)}"
     
+    def _extract_yellow_highlighted_text(self) -> Optional[str]:
+        """Extract text from yellow highlighted regions."""
+        highlights = self.deps.extracted_content.get('highlights', {}).get('yellow', [])
+        if not highlights:
+            return None
+        
+        # Get structured text blocks
+        structured = self.deps.extracted_content.get('structured_text', {})
+        raw_blocks = structured.get('raw_blocks', [])
+        
+        # Find text blocks that intersect with yellow highlights
+        highlighted_texts = []
+        for highlight in highlights:
+            hl_bbox = highlight.get('bbox', [])
+            if len(hl_bbox) != 4:
+                continue
+            
+            # Handle both [x, y, w, h] and [x1, y1, x2, y2] formats
+            if len(hl_bbox) == 4:
+                # Check if it's [x, y, w, h] or [x1, y1, x2, y2]
+                # If w or h is very large, it's likely [x, y, w, h]
+                if hl_bbox[2] > 1000 or hl_bbox[3] > 1000:
+                    # Format: [x, y, w, h]
+                    hl_x1, hl_y1, hl_w, hl_h = hl_bbox
+                    hl_x2 = hl_x1 + hl_w
+                    hl_y2 = hl_y1 + hl_h
+                else:
+                    # Format: [x1, y1, x2, y2]
+                    hl_x1, hl_y1, hl_x2, hl_y2 = hl_bbox
+            
+            for block in raw_blocks:
+                block_bbox = block.get('bbox', [])
+                if len(block_bbox) != 4:
+                    continue
+                
+                # Block bbox is always [x1, y1, x2, y2] from OCR
+                bx1, by1, bx2, by2 = block_bbox
+                
+                # Check intersection (with some margin for better matching)
+                margin = 5
+                if not (bx2 + margin < hl_x1 or bx1 - margin > hl_x2 or by2 + margin < hl_y1 or by1 - margin > hl_y2):
+                    highlighted_texts.append(block.get('text', ''))
+        
+        return ' '.join(highlighted_texts) if highlighted_texts else None
+    
+    def _get_auto_highlight_explanations(self) -> List[Dict]:
+        """Get explanations for auto-highlighted (purple) sections."""
+        auto_highlights = self.deps.extracted_content.get('auto_highlights', [])
+        return auto_highlights
+    
     async def _handle_query_with_tools(self, query: str) -> Optional[str]:
         """Check if query requires tool usage and handle it."""
         query_lower = query.lower()
+        
+        # 1. Explain yellow highlighted text
+        if any(keyword in query_lower for keyword in ['yellow', 'highlighted text', 'highlighted in yellow']):
+            yellow_text = self._extract_yellow_highlighted_text()
+            if yellow_text:
+                context = f"User highlighted this text (in yellow):\n{yellow_text}\n\n"
+                context += "Please provide a tutorial-style explanation of this highlighted text in simple, educational terms."
+                # Use LLM to explain
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": context}
+                ]
+                try:
+                    response = ollama.chat(model=self.model_name, messages=messages)
+                    return response['message']['content']
+                except Exception as e:
+                    logger.error(f"Error explaining yellow text: {e}")
+                    return f"Found highlighted text: {yellow_text[:200]}...\n\nPlease ask me to explain it and I'll provide a tutorial-style explanation."
+            else:
+                return "No yellow highlighted text detected on the current screen. Please highlight some text first."
+        
+        # 2. Explain auto-highlighted (purple) sections
+        if any(keyword in query_lower for keyword in ['purple', 'auto-highlight', 'important sections', 'why important']):
+            auto_highlights = self._get_auto_highlight_explanations()
+            if auto_highlights:
+                output = "**Auto-highlighted Important Sections (Purple):**\n\n"
+                for i, hl in enumerate(auto_highlights, 1):
+                    output += f"{i}. **{hl.get('type', 'Unknown').title()}**\n"
+                    output += f"   - Reason: {hl.get('reason', 'N/A')}\n"
+                    if hl.get('title'):
+                        output += f"   - Title: {hl.get('title')}\n"
+                    output += "\n"
+                return output
+            else:
+                return "No auto-highlighted sections found. Important sections, figures, and tables are automatically highlighted in purple as you scroll."
+        
+        # 3. Table analysis
+        if any(keyword in query_lower for keyword in ['table', 'what is this table', 'table showing']):
+            tables = self.deps.extracted_content.get('tables', [])
+            if not tables:
+                return "No tables detected on the current screen."
+            
+            # Extract table number if specified
+            table_num = None
+            for word in query_lower.split():
+                if word.isdigit():
+                    table_num = int(word) - 1
+                    break
+            
+            if table_num is not None and 0 <= table_num < len(tables):
+                table = tables[table_num]
+                table_content = table.get('content', '')
+                context = f"Analyze this table (Table {table_num + 1}):\n\n"
+                if table_content:
+                    context += f"Table Content:\n{table_content}\n\n"
+                else:
+                    context += f"Table detected at position {table.get('bbox')}.\n"
+                context += "What is this table showing? Explain the data, structure, and key insights."
+            else:
+                context = f"Analyze the {len(tables)} table(s) detected on screen:\n\n"
+                for i, table in enumerate(tables, 1):
+                    table_content = table.get('content', '')
+                    if table_content:
+                        context += f"Table {i} Content:\n{table_content}\n\n"
+                    else:
+                        context += f"Table {i} at position {table.get('bbox')}\n\n"
+                context += "What are these tables showing? Explain the data, structure, and key insights."
+            
+            # Add structured text context
+            structured = self.deps.extracted_content.get('structured_text', {})
+            if structured.get('sections'):
+                context += f"\n\nContext from paper sections: {structured.get('full_text', '')[:1000]}"
+            
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": context}
+            ]
+            try:
+                response = ollama.chat(model=self.model_name, messages=messages)
+                return response['message']['content']
+            except Exception as e:
+                logger.error(f"Error analyzing table: {e}")
+                return f"Found {len(tables)} table(s). Please ask me to analyze a specific table number."
+        
+        # 4. Ablation study analysis
+        if any(keyword in query_lower for keyword in ['ablation', 'most detrimental', 'worst ablation']):
+            structured = self.deps.extracted_content.get('structured_text', {})
+            full_text = structured.get('full_text', '') or self.deps.extracted_content.get('text', '')
+            
+            if not full_text:
+                return "No text extracted. Please process the paper first."
+            
+            # Search for ablation-related sections
+            ablation_keywords = ['ablation', 'without', 'removing', 'removal', 'w/o', 'baseline', 'component']
+            sections = structured.get('sections', [])
+            ablation_sections = []
+            
+            for section in sections:
+                content_lower = section.get('content', '').lower()
+                title_lower = section.get('title', '').lower()
+                if any(kw in content_lower or kw in title_lower for kw in ablation_keywords):
+                    ablation_sections.append(section)
+            
+            # Build context with ablation-focused content
+            context = "Analyze this paper to identify ablation studies and their impact:\n\n"
+            
+            if ablation_sections:
+                context += "Ablation-related sections found:\n"
+                for section in ablation_sections:
+                    context += f"\n{section.get('title', 'Unknown')}:\n{section.get('content', '')[:500]}\n"
+                context += "\n"
+            else:
+                # Use full text but focus on results/experiments sections
+                context += f"Paper content:\n{full_text[:4000]}\n\n"
+            
+            context += "Instructions:\n"
+            context += "1. Find all ablation studies mentioned (experiments where components are removed)\n"
+            context += "2. Identify which ablation study removal causes the MOST DETRIMENTAL impact on performance\n"
+            context += "3. Look for metrics like accuracy, F1 score, or other performance measures\n"
+            context += "4. Explain why this particular component is critical to the system\n"
+            context += "5. Compare the performance drop with other ablation studies"
+            
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": context}
+            ]
+            try:
+                response = ollama.chat(model=self.model_name, messages=messages)
+                return response['message']['content']
+            except Exception as e:
+                logger.error(f"Error analyzing ablation: {e}")
+                return "Error analyzing ablation studies. Please ensure the paper content has been extracted."
+        
+        # 5. Diagram replication (Mermaid/Excalidraw) - Extra credit
+        if any(keyword in query_lower for keyword in ['diagram', 'block diagram', 'mermaid', 'excalidraw', 'replicate']):
+            from utils.diagram_parser import DiagramParser
+            
+            figures = self.deps.extracted_content.get('figures', [])
+            if not figures:
+                return "No figures/diagrams detected. Please ensure a diagram is visible on screen."
+            
+            # Try to parse the largest figure (likely to be a diagram)
+            largest_figure = max(figures, key=lambda f: f.get('area', 0))
+            
+            # Try to use diagram parser if image is available
+            if self.deps.current_image is not None and self.vlm is not None:
+                try:
+                    parser = DiagramParser(self.vlm)
+                    diagram_data = parser.detect_diagram_structure(
+                        self.deps.current_image,
+                        largest_figure.get('bbox', [0, 0, 100, 100])
+                    )
+                    
+                    # Generate Mermaid
+                    mermaid_code = parser.to_mermaid(diagram_data)
+                    
+                    # Generate Excalidraw
+                    image_size = self.deps.current_image.size if hasattr(self.deps.current_image, 'size') else (1920, 1080)
+                    excalidraw_json = parser.to_excalidraw(diagram_data, image_size)
+                    
+                    output = "## 📊 Diagram Replication (Extra Credit)\n\n"
+                    output += f"**Detected {len(diagram_data.get('nodes', []))} nodes and {len(diagram_data.get('edges', []))} connections**\n\n"
+                    output += "### Mermaid Diagram:\n\n"
+                    output += mermaid_code + "\n\n"
+                    output += "### Excalidraw JSON:\n\n"
+                    output += f"```json\n{excalidraw_json[:2000]}...\n```\n"
+                    output += "\n*(Full JSON available in response data)*"
+                    
+                    return output
+                except Exception as e:
+                    logger.error(f"Diagram parsing error: {e}")
+                    # Fall through to LLM-based generation
+            
+            # Fallback: Use LLM to generate based on description
+            structured = self.deps.extracted_content.get('structured_text', {})
+            context = f"Analyze the figures/diagrams in this paper:\n\n"
+            context += f"Found {len(figures)} figure(s). Largest figure at position {largest_figure.get('bbox')}.\n\n"
+            context += f"Paper content context:\n{structured.get('full_text', '')[:2000]}\n\n"
+            context += "Identify any block diagrams or system architectures. Generate:\n"
+            context += "1. A Mermaid diagram code (```mermaid ... ```)\n"
+            context += "2. An Excalidraw JSON representation\n"
+            context += "Replicate the bounded block diagram structure with nodes and connections."
+            
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": context}
+            ]
+            try:
+                response = ollama.chat(model=self.model_name, messages=messages)
+                return response['message']['content']
+            except Exception as e:
+                logger.error(f"Error replicating diagram: {e}")
+                return "Error generating diagram. Please ensure a clear block diagram is visible."
         
         # Search for papers
         if any(keyword in query_lower for keyword in ['search for', 'find papers', 'look up papers']):

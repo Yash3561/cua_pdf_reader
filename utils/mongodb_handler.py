@@ -1,12 +1,32 @@
 """MongoDB handler for storing CUA interactions."""
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 from dotenv import load_dotenv
+import numpy as np
 
 load_dotenv()
+
+def convert_numpy_types(obj: Any) -> Any:
+    """Recursively convert numpy types to Python native types."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_numpy_types(item) for item in obj)
+    elif isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    return obj
+
 
 class MongoDBHandler:
     """Handles all MongoDB operations for the CUA system."""
@@ -22,7 +42,7 @@ class MongoDBHandler:
         """Connect to MongoDB."""
         try:
             self.client = MongoClient(self.uri, serverSelectionTimeoutMS=5000)
-            self.client.server_info()  # Force connection
+            self.client.server_info()
             self.db = self.client[self.db_name]
             print(f"✅ Connected to MongoDB: {self.db_name}")
         except ConnectionFailure as e:
@@ -33,21 +53,27 @@ class MongoDBHandler:
         """Store a user interaction."""
         collection = self.db.interactions
         interaction_data["timestamp"] = datetime.utcnow()
-        result = collection.insert_one(interaction_data)
+        # Convert numpy types
+        clean_data = convert_numpy_types(interaction_data)
+        result = collection.insert_one(clean_data)
         return str(result.inserted_id)
     
     def store_extracted_content(self, content_data: Dict) -> str:
         """Store extracted content from VLM."""
         collection = self.db.extracted_content
         content_data["timestamp"] = datetime.utcnow()
-        result = collection.insert_one(content_data)
+        # Convert numpy types
+        clean_data = convert_numpy_types(content_data)
+        result = collection.insert_one(clean_data)
         return str(result.inserted_id)
     
     def store_question_answer(self, qa_data: Dict) -> str:
         """Store question and answer pair."""
         collection = self.db.qa_pairs
         qa_data["timestamp"] = datetime.utcnow()
-        result = collection.insert_one(qa_data)
+        # Convert numpy types
+        clean_data = convert_numpy_types(qa_data)
+        result = collection.insert_one(clean_data)
         return str(result.inserted_id)
     
     def get_recent_interactions(self, limit: int = 10) -> List[Dict]:
@@ -67,9 +93,3 @@ class MongoDBHandler:
         if self.client:
             self.client.close()
             print("MongoDB connection closed")
-
-# Test the connection
-if __name__ == "__main__":
-    handler = MongoDBHandler()
-    print("MongoDB handler initialized successfully!")
-    handler.close()

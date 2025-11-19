@@ -2,6 +2,7 @@
 import gradio as gr
 import asyncio
 import numpy as np
+import cv2
 from typing import Optional
 import os
 from dotenv import load_dotenv
@@ -10,6 +11,9 @@ from utils.mongodb_handler import MongoDBHandler
 from utils.vlm_processor import VLMProcessor
 from agent.cua_agent import CUAAgent
 from webrtc_server.server import webrtc_server
+import threading
+import uvicorn
+from webrtc_server.signaling import app as signaling_app
 
 load_dotenv()
 
@@ -20,7 +24,7 @@ class CUAApp:
     def __init__(self):
         self.db = MongoDBHandler()
         self.vlm = VLMProcessor()
-        self.agent = CUAAgent()
+        self.agent = CUAAgent(vlm_processor=self.vlm)  # Pass VLM to agent
         self.current_frame = None
         self.extracted_content = None
         
@@ -70,8 +74,24 @@ class CUAApp:
             yellow_count = len(highlights.get('yellow', []))
             purple_count = len(highlights.get('purple', []))
             output += f"🎨 **HIGHLIGHTS:**\n"
-            output += f"  • Yellow: {yellow_count}\n"
-            output += f"  • Purple: {purple_count}\n"
+            output += f"  • Yellow (user): {yellow_count}\n"
+            output += f"  • Purple (auto): {purple_count}\n"
+            
+            # Auto-highlights with explanations
+            auto_highlights = self.extracted_content.get('auto_highlights', [])
+            if auto_highlights:
+                output += f"\n💜 **AUTO-HIGHLIGHTED SECTIONS:**\n"
+                for i, hl in enumerate(auto_highlights[:5], 1):  # Show first 5
+                    output += f"  {i}. {hl.get('type', 'Unknown').title()}: {hl.get('reason', 'N/A')}\n"
+            
+            # Structured sections preview
+            structured = self.extracted_content.get('structured_text', {})
+            if structured.get('sections'):
+                output += f"\n📑 **SECTIONS DETECTED:** {len(structured.get('sections', []))}\n"
+                for section in structured.get('sections', [])[:3]:  # Show first 3
+                    title = section.get('title', 'Unknown')
+                    content_preview = section.get('content', '')[:100]
+                    output += f"  • {title}: {content_preview}...\n"
             
             # Store in database
             self.db.store_extracted_content({
@@ -95,18 +115,21 @@ class CUAApp:
             return history, ""
         
         try:
-            # Add user message to history
+            # Initialize history if needed
             history = history or []
-            history.append([question, None])
             
-            # Get response from agent
+            # Add user message to history (messages format)
+            history.append({"role": "user", "content": question})
+            
+            # Get response from agent (pass current image for diagram parsing)
             response = await self.agent.process_query(
                 query=question,
-                extracted_content=self.extracted_content
+                extracted_content=self.extracted_content,
+                current_image=self.current_frame
             )
             
-            # Update history with response
-            history[-1][1] = response
+            # Add assistant response to history
+            history.append({"role": "assistant", "content": response})
             
             # Store in database
             self.db.store_question_answer({
@@ -118,8 +141,19 @@ class CUAApp:
             return history, ""
         
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            history[-1][1] = error_msg
+            import traceback
+            error_msg = f"Error: {str(e)}\n\nPlease ensure:\n1. Ollama is running (ollama serve)\n2. Model qwen2.5:3b is installed (ollama pull qwen2.5:3b)"
+            print(f"❌ Chat error: {e}")
+            print(traceback.format_exc())
+            
+            # Add error to history
+            history = history or []
+            if history and history[-1].get("role") == "user":
+                history.append({"role": "assistant", "content": error_msg})
+            else:
+                history.append({"role": "user", "content": question})
+                history.append({"role": "assistant", "content": error_msg})
+            
             return history, ""
     
     def set_paper_info(self, paper_id: str, paper_title: str):
@@ -132,11 +166,25 @@ class CUAApp:
     def reset_conversation(self):
         """Reset the conversation history."""
         self.agent.reset_conversation()
-        return []
+        return []  # Return empty list for messages format
+
+
+def start_signaling_server():
+    """Start the WebRTC signaling server in a background thread."""
+    def run_server():
+        uvicorn.run(signaling_app, host="0.0.0.0", port=8080, log_level="info")
+    
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    print("✅ WebRTC signaling server started on http://localhost:8080")
+    return server_thread
 
 
 def create_ui():
     """Create the Gradio interface."""
+    # Start signaling server
+    start_signaling_server()
+    
     app = CUAApp()
     
     with gr.Blocks(title="CUA PDF Reader", theme=gr.themes.Soft()) as demo:
@@ -155,12 +203,12 @@ def create_ui():
                     with gr.Column():
                         paper_id_input = gr.Textbox(
                             label="Paper ID",
-                            placeholder="e.g., ARXIV:2205.14756",
+                            placeholder="e.g., ARXIV:2401.16889",
                             info="Semantic Scholar or ArXiv ID"
                         )
                         paper_title_input = gr.Textbox(
                             label="Paper Title",
-                            placeholder="e.g., EfficientViT: Multi-Scale Linear Attention..."
+                            placeholder="e.g., Reinforcement Learning for Versatile, Dynamic, and Robust Bipedal Locomotion Control"
                         )
                         set_paper_btn = gr.Button("Set Current Paper", variant="primary")
                         paper_status = gr.Textbox(label="Status", interactive=False)
@@ -169,9 +217,17 @@ def create_ui():
                         gr.Markdown("""
                         **System Info:**
                         - VLM: EasyOCR (GPU-accelerated)
-                        - LLM: Qwen2.5-3B
+                        - LLM: Qwen2.5-3B via Ollama
                         - Database: MongoDB (Local)
-                        - API: Semantic Scholar (No key needed)
+                        - API: Semantic Scholar (Free tier)
+                        
+                        **Current Features:**
+                        - ✅ Text extraction from PDFs
+                        - ✅ Table & figure detection
+                        - ✅ Highlight detection (yellow/purple)
+                        - ✅ Auto-highlighting important sections
+                        - ✅ Column-aware text extraction
+                        - ✅ Q&A with context
                         """)
                 
                 set_paper_btn.click(
@@ -180,14 +236,33 @@ def create_ui():
                     outputs=paper_status
                 )
             
-           # Tab 2: Screen Capture (Test Mode)
-            with gr.Tab("📸 Screen Capture (Test Mode)"):
+            # Tab 2: Screen Capture (RECOMMENDED - PRIMARY METHOD)
+            with gr.Tab("📸 Screen Capture (Recommended)"):
                 gr.Markdown("""
-                ### Upload a PDF screenshot for testing
-                - **Zoomed text**: Upload close-up of specific paragraphs
-                - **Full page**: Upload entire page (will auto-split into regions)
+                ### Upload PDF Screenshots
                 
-                In production, this will capture from WebRTC screen sharing.
+                **✨ Best method for accurate text extraction!**
+                
+                **Quick Start:**
+                1. Open your PDF in any viewer (Adobe, Chrome, Firefox, etc.)
+                2. Take screenshot: 
+                   - **Windows**: `Win + Shift + S` or Snipping Tool
+                   - **Mac**: `Cmd + Shift + 4`
+                3. Upload screenshot below
+                4. Click "Process Image"
+                
+                **Tips for Best Results:**
+                - 📏 Zoom PDF to **150-200%** for crisp text
+                - 🎯 For **single-column text**: Use normal mode
+                - 📰 For **multi-column papers**: Enable "Full Page Mode"
+                - ✂️ For **best column accuracy**: Crop each column separately
+                
+                **What gets detected:**
+                - 📝 All text content (column-aware)
+                - 📊 Tables and their positions
+                - 🖼️ Figures and diagrams  
+                - 🎨 Yellow highlights (user-added)
+                - 💜 Auto-highlighted important sections
                 """)
                 
                 with gr.Row():
@@ -197,16 +272,17 @@ def create_ui():
                             type="numpy"
                         )
                         full_page_mode = gr.Checkbox(
-                            label="Full Page Mode (split into regions for better OCR)",
-                            value=False
+                            label="Full Page Mode (better for multi-column papers)",
+                            value=True,
+                            info="Splits page into regions for column-aware extraction"
                         )
-                        process_btn = gr.Button("Process Image", variant="primary")
+                        process_btn = gr.Button("Process Image", variant="primary", size="lg")
                     
                     with gr.Column():
                         extracted_output = gr.Textbox(
                             label="Extracted Content",
-                            lines=15,
-                            max_lines=20
+                            lines=20,
+                            max_lines=25
                         )
                         processed_image = gr.Image(label="Processed Image")
                 
@@ -219,16 +295,135 @@ def create_ui():
                     outputs=[extracted_output, processed_image]
                 )
             
-            # Tab 3: Chat Interface
+            # Tab 3: WebRTC Capture (Advanced)
+            with gr.Tab("🔹 WebRTC Capture (Advanced)"):
+                gr.Markdown("""
+                ### Real-time Screen Capture via WebRTC
+                
+                **⚠️ IMPORTANT: PDF Capture Issues**
+                
+                PDFs often show as blank in WebRTC due to hardware acceleration. **Solutions:**
+                
+                **Option 1: Disable Hardware Acceleration**
+                - **Chrome PDF**: Go to `chrome://flags` → search "hardware" → disable "Hardware-accelerated video decode"
+                - **Adobe Reader**: Edit → Preferences → General → uncheck "Use hardware acceleration"  
+                - **Firefox**: Better PDF capture by default
+                
+                **Option 2: Workaround (Easier)**
+                1. Take a screenshot of PDF (Win + Shift + S)
+                2. Paste screenshot into a new browser tab
+                3. Share that tab via WebRTC instead
+                
+                **Quick Start:**
+                1. Click link below to open screen share client
+                2. Click "Start Screen Share" in new window
+                3. Select your PDF tab/window or entire screen
+                4. Come back here and click "Capture Latest Frame"
+                5. Process the captured frame
+                
+                **Screen Share Client:** [Open in New Tab](http://localhost:8080/client.html){target="_blank"}
+                
+                **Troubleshooting:**
+                - ❌ Blank capture? → Share entire screen instead of tab
+                - ❌ Still blank? → Use Firefox or the Screenshot method above
+                - ✅ Works best with: Image files, web pages, non-accelerated content
+                """)
+                
+                with gr.Row():
+                    with gr.Column():
+                        webrtc_status = gr.Textbox(
+                            label="WebRTC Status",
+                            value="Not connected",
+                            interactive=False
+                        )
+                        capture_frame_btn = gr.Button("Capture Latest Frame", variant="primary")
+                        process_webrtc_btn = gr.Button("Process Captured Frame", variant="secondary")
+                    
+                    with gr.Column():
+                        webrtc_frame = gr.Image(label="Captured Frame", type="numpy")
+                        webrtc_output = gr.Textbox(
+                            label="Extracted Content",
+                            lines=15
+                        )
+                
+                def capture_webrtc_frame():
+                    """Capture the latest frame from WebRTC."""
+                    import requests
+                    try:
+                        # Check signaling server status
+                        print("🔍 Checking WebRTC status...")
+                        status_resp = requests.get("http://localhost:8080/status", timeout=2)
+                        status_data = status_resp.json()
+                        print(f"📊 Status response: {status_data}")
+                        
+                        is_capturing = status_data.get("is_capturing", False)
+                        has_frame = status_data.get("has_frame", False)
+                        
+                        print(f"📹 is_capturing: {is_capturing}, has_frame: {has_frame}")
+                        
+                        if is_capturing:
+                            frame = webrtc_server.get_latest_frame_sync()  # Use sync method
+                            print(f"🖼️ Frame from server: {type(frame)}, {frame.shape if hasattr(frame, 'shape') else 'None'}")
+                            
+                            if frame is not None:
+                                # Convert numpy array to PIL Image if needed
+                                from PIL import Image
+                                if isinstance(frame, np.ndarray):
+                                    # Convert BGR to RGB for PIL
+                                    if len(frame.shape) == 3 and frame.shape[2] == 3:
+                                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                    frame = Image.fromarray(frame)
+                                app.current_frame = frame
+                                print(f"✅ Frame converted to PIL: {frame.size}")
+                                return frame, f"✅ Frame captured successfully! Size: {frame.size}"
+                            return None, f"⚠️ Connected but no frame available yet. is_capturing={is_capturing}, has_frame={has_frame}"
+                        else:
+                            return None, "❌ WebRTC not connected. Please start screen sharing at http://localhost:8080/client.html"
+                    except Exception as e:
+                        import traceback
+                        error_msg = f"❌ Error: {str(e)}\n{traceback.format_exc()}"
+                        print(error_msg)
+                        return None, error_msg
+                
+                def process_webrtc_frame():
+                    """Process the captured WebRTC frame."""
+                    if app.current_frame is None:
+                        return "⚠️ No frame captured. Please capture a frame first."
+                    try:
+                        result = app.process_frame_from_upload(app.current_frame, full_page_mode=True)
+                        return result[0]  # Return just the text output
+                    except Exception as e:
+                        return f"❌ Error: {str(e)}"
+                
+                capture_frame_btn.click(
+                    fn=capture_webrtc_frame,
+                    outputs=[webrtc_frame, webrtc_status]
+                )
+                
+                process_webrtc_btn.click(
+                    fn=process_webrtc_frame,
+                    outputs=webrtc_output
+                )
+            
+            # Tab 4: Chat Interface
             with gr.Tab("💬 Ask Questions"):
                 gr.Markdown("""
                 ### Ask questions about the paper
-                The agent can explain text, analyze tables, discuss figures, and search for references.
+                
+                The agent can:
+                - 📖 Explain highlighted text and technical concepts
+                - 📊 Analyze tables and figures
+                - 🔍 Search for related papers and references
+                - 💡 Identify key findings and ablation studies
+                - 🎨 Explain auto-highlighted important sections
+                
+                **Make sure to process a PDF screenshot first in the "Screen Capture" tab!**
                 """)
                 
                 chatbot = gr.Chatbot(
                     height=500,
-                    label="Conversation"
+                    label="Conversation",
+                    type="messages"
                 )
                 
                 with gr.Row():
@@ -242,16 +437,17 @@ def create_ui():
                 with gr.Row():
                     clear_btn = gr.Button("Clear Conversation")
                     
-                    # Example questions
+                    # Example questions from project requirements
                     gr.Examples(
                         examples=[
-                            "Explain the highlighted text in simple terms",
-                            "What is this table showing?",
-                            "What are the key findings of this paper?",
-                            "What is the most important ablation study?",
+                            "Explain the yellow highlighted text in simple terms",
+                            "What are the auto-highlighted important sections and why?",
+                            "What is table 1 showing?",
+                            "What is the most detrimental ablation study in this paper and why?",
                             "Search for related papers on attention mechanisms"
                         ],
-                        inputs=question_input
+                        inputs=question_input,
+                        label="Example Questions (from Project Requirements)"
                     )
                 
                 async def handle_question(question, history):
@@ -276,16 +472,29 @@ def create_ui():
         
         gr.Markdown("""
         ---
-        **Tips:**
-        1. Set your current paper in Configuration tab
-        2. Upload a PDF screenshot in Screen Capture tab
-        3. Ask questions in the Chat tab
+        ### 📖 Quick Guide
         
-        **Features:**
-        - Extracts text, tables, and figures from PDFs
-        - Searches academic paper databases
-        - Provides tutorial-style explanations
-        - Maintains conversation context
+        **1. Setup (Configuration Tab)**
+        - Set your paper ID and title for context
+        
+        **2. Extract Content (Screen Capture Tab)**  
+        - Upload PDF screenshot
+        - Enable "Full Page Mode" for multi-column papers
+        - Process the image
+        
+        **3. Ask Questions (Chat Tab)**
+        - Ask about highlighted sections, tables, figures
+        - Get explanations of complex concepts
+        - Search for related papers
+        
+        ### ✨ Features
+        - 📝 Column-aware text extraction
+        - 📊 Automatic table & figure detection
+        - 🎨 Yellow highlight detection (user annotations)
+        - 💜 Auto-highlighting of important sections (Abstract, Methods, Results, etc.)
+        - 🔍 Semantic Scholar integration for paper search
+        - 💾 MongoDB storage of all interactions
+        - 🤖 Context-aware Q&A with Qwen2.5-3B
         """)
     
     return demo
