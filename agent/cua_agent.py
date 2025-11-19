@@ -57,7 +57,8 @@ class CUAAgent:
         self,
         query: str,
         extracted_content: Optional[Dict] = None,
-        current_image: Optional[object] = None
+        current_image: Optional[object] = None,
+        frame_history: Optional[object] = None
     ) -> str:
         """
         Process a user query using the agent.
@@ -87,12 +88,41 @@ class CUAAgent:
         if self.deps.current_paper_title:
             context_parts.append(f"Current paper: {self.deps.current_paper_title}")
         
-        if self.deps.extracted_content.get('text'):
-            text = self.deps.extracted_content['text']
+        # Add historical context if available
+        if extracted_content and extracted_content.get('historical_context'):
+            context_parts.append(f"Historical context from previous frames:\n{extracted_content['historical_context']}")
+            if extracted_content.get('frame_history_count'):
+                context_parts.append(f"Total frames in history: {extracted_content['frame_history_count']}")
+        
+        # Get text from current frame
+        current_text = self.deps.extracted_content.get('text', '')
+        if not current_text:
+            structured = self.deps.extracted_content.get('structured_text', {})
+            current_text = structured.get('full_text', '')
+        
+        if current_text:
             # Truncate if too long
-            if len(text) > 2000:
-                text = text[:2000] + "..."
-            context_parts.append(f"Extracted text from screen:\n{text}")
+            if len(current_text) > 2000:
+                current_text = current_text[:2000] + "..."
+            context_parts.append(f"Current frame extracted text:\n{current_text}")
+        
+        # If frame history is available, add summary
+        if frame_history and hasattr(frame_history, 'get_frame_count'):
+            history_count = frame_history.get_frame_count()
+            if history_count > 0:
+                # Check if stitched document is available
+                stitched_doc = self.deps.extracted_content.get("stitched_document")
+                if stitched_doc and stitched_doc.get("stitched_text"):
+                    # Use stitched document (full reconstructed PDF)
+                    stitched_text = stitched_doc.get("stitched_text", "")
+                    if len(stitched_text) > 5000:
+                        stitched_text = stitched_text[:5000] + "..."
+                    context_parts.append(f"\n📄 **Full Stitched Document** (reconstructed from {stitched_doc.get('frames_used', 0)} frames):\n{stitched_text}")
+                else:
+                    # Fallback: Get combined text from all frames (limited)
+                    all_text = frame_history.get_all_text(max_chars=3000)
+                    if all_text:
+                        context_parts.append(f"\nCombined text from {history_count} frames in history:\n{all_text}")
         
         if self.deps.extracted_content.get('tables'):
             context_parts.append(f"Found {len(self.deps.extracted_content['tables'])} tables on screen")
