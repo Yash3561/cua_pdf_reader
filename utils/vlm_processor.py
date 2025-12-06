@@ -670,9 +670,10 @@ class VLMProcessor:
             img = np.array(image)
             hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
             
-            # Yellow highlight detection (broader range)
-            yellow_lower = np.array([15, 50, 100])
-            yellow_upper = np.array([35, 255, 255])
+            # Yellow highlight detection (broadened range)
+            # Low saturation/value to catch light/pale highlights
+            yellow_lower = np.array([15, 30, 150])
+            yellow_upper = np.array([40, 255, 255])
             yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
             
             # Purple/Magenta highlight detection
@@ -680,9 +681,21 @@ class VLMProcessor:
             purple_upper = np.array([165, 255, 255])
             purple_mask = cv2.inRange(hsv, purple_lower, purple_upper)
             
+            # Blue highlight detection (New)
+            blue_lower = np.array([90, 50, 50])
+            blue_upper = np.array([130, 255, 255])
+            blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
+            
+            # Morphological operations to close gaps (text within highlights)
+            kernel = np.ones((5, 5), np.uint8)
+            yellow_mask = cv2.dilate(yellow_mask, kernel, iterations=2)
+            purple_mask = cv2.dilate(purple_mask, kernel, iterations=2)
+            blue_mask = cv2.dilate(blue_mask, kernel, iterations=2)
+            
             # Find contours
             yellow_contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             purple_contours, _ = cv2.findContours(purple_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            blue_contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             yellow_highlights = []
             for contour in yellow_contours:
@@ -696,14 +709,22 @@ class VLMProcessor:
                     x, y, w, h = cv2.boundingRect(contour)
                     purple_highlights.append({"bbox": [x, y, w, h]})
             
+            blue_highlights = []
+            for contour in blue_contours:
+                if cv2.contourArea(contour) > 200:
+                    x, y, w, h = cv2.boundingRect(contour)
+                    blue_highlights.append({"bbox": [x, y, w, h]})
+            
             return {
                 "yellow": yellow_highlights,
-                "purple": purple_highlights
+                "purple": purple_highlights,
+                "blue": blue_highlights
             }
         
         except Exception as e:
             print(f"⚠️ Highlight detection error: {e}")
-            return {"yellow": [], "purple": []}
+            print(f"⚠️ Highlight detection error: {e}")
+            return {"yellow": [], "purple": [], "blue": []}
     
     def auto_highlight_important_sections(
         self,

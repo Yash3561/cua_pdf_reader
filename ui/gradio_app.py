@@ -187,19 +187,37 @@ def create_ui():
     
     app = CUAApp()
     
-    with gr.Blocks(title="CUA PDF Reader", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("""
-        # 📄 Computer Using Agent - PDF Reader
-        
-        AI agent that helps you understand academic papers through screen capture and natural language interaction.
-        """)
+    # Load custom CSS
+    css_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "styles.css")
+    with open(css_path, "r", encoding="utf-8") as f:
+        custom_css = f.read()
+    
+    with gr.Blocks(
+        title="CUA PDF Reader", 
+        theme=gr.themes.Soft(primary_hue="indigo", secondary_hue="violet"),
+        css=custom_css
+    ) as demo:
+        # Modern Header
+        with gr.Row(elem_classes=["glass-panel", "app-header"]):
+            gr.HTML("""
+            <div style="text-align: center;">
+                <h1 class="gradient-text app-title">📄 CUA PDF Reader</h1>
+                <p class="app-subtitle">AI-Powered Academic Paper Analysis • Extract • Understand • Interact</p>
+                <div style="margin-top: 1rem;">
+                    <span class="status-badge success">✓ MongoDB</span>
+                    <span class="status-badge success">✓ Ollama</span>
+                    <span class="status-badge success">✓ WebRTC</span>
+                </div>
+            </div>
+            """)
         
         with gr.Tabs():
             # Tab 1: Configuration
             with gr.Tab("⚙️ Configuration"):
-                gr.Markdown("### System Configuration")
+                with gr.Row(elem_classes=["glass-panel"]):
+                    gr.Markdown("### 📋 Paper Configuration")
                 
-                with gr.Row():
+                with gr.Row(elem_classes=["glass-panel"]):
                     with gr.Column():
                         paper_id_input = gr.Textbox(
                             label="Paper ID",
@@ -237,35 +255,19 @@ def create_ui():
                 )
             
             # Tab 2: Screen Capture (RECOMMENDED - PRIMARY METHOD)
-            with gr.Tab("📸 Screen Capture (Recommended)"):
-                gr.Markdown("""
-                ### Upload PDF Screenshots
+            with gr.Tab("📸 Screen Capture"):
+                with gr.Row(elem_classes=["glass-panel"]):
+                    gr.Markdown("""
+                    ### 📝 Upload PDF Screenshots
+                    
+                    **✨ Best method for accurate text extraction!**
+                    
+                    **Quick Start:** Open PDF → Screenshot (`Win+Shift+S` / `Cmd+Shift+4`) → Upload → Process
+                    
+                    **Tips:** Zoom to 150-200% • Enable Full Page Mode for multi-column papers
+                    """)
                 
-                **✨ Best method for accurate text extraction!**
-                
-                **Quick Start:**
-                1. Open your PDF in any viewer (Adobe, Chrome, Firefox, etc.)
-                2. Take screenshot: 
-                   - **Windows**: `Win + Shift + S` or Snipping Tool
-                   - **Mac**: `Cmd + Shift + 4`
-                3. Upload screenshot below
-                4. Click "Process Image"
-                
-                **Tips for Best Results:**
-                - 📏 Zoom PDF to **150-200%** for crisp text
-                - 🎯 For **single-column text**: Use normal mode
-                - 📰 For **multi-column papers**: Enable "Full Page Mode"
-                - ✂️ For **best column accuracy**: Crop each column separately
-                
-                **What gets detected:**
-                - 📝 All text content (column-aware)
-                - 📊 Tables and their positions
-                - 🖼️ Figures and diagrams  
-                - 🎨 Yellow highlights (user-added)
-                - 💜 Auto-highlighted important sections
-                """)
-                
-                with gr.Row():
+                with gr.Row(elem_classes=["glass-panel"]):
                     with gr.Column():
                         image_input = gr.Image(
                             label="Upload PDF Screenshot",
@@ -296,40 +298,37 @@ def create_ui():
                 )
             
             # Tab 3: WebRTC Capture (Advanced)
-            with gr.Tab("🔹 WebRTC Capture (Advanced)"):
-                gr.Markdown("""
-                ### Real-time Screen Capture via WebRTC
+            with gr.Tab("🔹 WebRTC Capture"):
+                with gr.Row(elem_classes=["glass-panel"]):
+                    gr.Markdown("""
+                    ### 🔴 Real-time Screen Capture
+                    
+                    **⚠️ Note:** PDFs may appear blank due to hardware acceleration. Use Screenshot tab for best results.
+                    
+                    **Quick Start:**
+                    1. Click the button below to open the WebRTC client
+                    2. Click "Start Screen Share" in the new window
+                    3. Select your screen/window to share
+                    4. Return here and click "Capture Latest Frame"
+                    """)
                 
-                **⚠️ IMPORTANT: PDF Capture Issues**
+                with gr.Row(elem_classes=["glass-panel"]):
+                    with gr.Column():
+                        open_client_btn = gr.Button(
+                            "🌐 Open WebRTC Client",
+                            variant="secondary",
+                            size="lg",
+                            elem_id="open-client-btn"
+                        )
+                        gr.HTML("""
+                        <script>
+                        document.getElementById('open-client-btn').onclick = function() {
+                            window.open('http://localhost:8080/client.html', '_blank');
+                        };
+                        </script>
+                        """)
                 
-                PDFs often show as blank in WebRTC due to hardware acceleration. **Solutions:**
-                
-                **Option 1: Disable Hardware Acceleration**
-                - **Chrome PDF**: Go to `chrome://flags` → search "hardware" → disable "Hardware-accelerated video decode"
-                - **Adobe Reader**: Edit → Preferences → General → uncheck "Use hardware acceleration"  
-                - **Firefox**: Better PDF capture by default
-                
-                **Option 2: Workaround (Easier)**
-                1. Take a screenshot of PDF (Win + Shift + S)
-                2. Paste screenshot into a new browser tab
-                3. Share that tab via WebRTC instead
-                
-                **Quick Start:**
-                1. Click link below to open screen share client
-                2. Click "Start Screen Share" in new window
-                3. Select your PDF tab/window or entire screen
-                4. Come back here and click "Capture Latest Frame"
-                5. Process the captured frame
-                
-                **Screen Share Client:** [Open in New Tab](http://localhost:8080/client.html){target="_blank"}
-                
-                **Troubleshooting:**
-                - ❌ Blank capture? → Share entire screen instead of tab
-                - ❌ Still blank? → Use Firefox or the Screenshot method above
-                - ✅ Works best with: Image files, web pages, non-accelerated content
-                """)
-                
-                with gr.Row():
+                with gr.Row(elem_classes=["glass-panel"]):
                     with gr.Column():
                         webrtc_status = gr.Textbox(
                             label="WebRTC Status",
@@ -407,24 +406,22 @@ def create_ui():
             
             # Tab 4: Chat Interface
             with gr.Tab("💬 Ask Questions"):
-                gr.Markdown("""
-                ### Ask questions about the paper
+                with gr.Row(elem_classes=["glass-panel"]):
+                    gr.Markdown("""
+                    ### 🤖 AI Assistant
+                    
+                    Ask questions about your paper! The agent can explain highlights, analyze tables, identify key findings, and search for related papers.
+                    
+                    **💡 Tip:** Process a PDF screenshot first in the Screen Capture tab!
+                    """)
                 
-                The agent can:
-                - 📖 Explain highlighted text and technical concepts
-                - 📊 Analyze tables and figures
-                - 🔍 Search for related papers and references
-                - 💡 Identify key findings and ablation studies
-                - 🎨 Explain auto-highlighted important sections
-                
-                **Make sure to process a PDF screenshot first in the "Screen Capture" tab!**
-                """)
-                
-                chatbot = gr.Chatbot(
-                    height=500,
-                    label="Conversation",
-                    type="messages"
-                )
+                with gr.Row(elem_classes=["glass-panel"]):
+                    chatbot = gr.Chatbot(
+                        height=500,
+                        label="Conversation",
+                        type="messages",
+                        elem_classes=["chatbot-container"]
+                    )
                 
                 with gr.Row():
                     question_input = gr.Textbox(
@@ -470,32 +467,20 @@ def create_ui():
                     outputs=chatbot
                 )
         
-        gr.Markdown("""
-        ---
-        ### 📖 Quick Guide
-        
-        **1. Setup (Configuration Tab)**
-        - Set your paper ID and title for context
-        
-        **2. Extract Content (Screen Capture Tab)**  
-        - Upload PDF screenshot
-        - Enable "Full Page Mode" for multi-column papers
-        - Process the image
-        
-        **3. Ask Questions (Chat Tab)**
-        - Ask about highlighted sections, tables, figures
-        - Get explanations of complex concepts
-        - Search for related papers
-        
-        ### ✨ Features
-        - 📝 Column-aware text extraction
-        - 📊 Automatic table & figure detection
-        - 🎨 Yellow highlight detection (user annotations)
-        - 💜 Auto-highlighting of important sections (Abstract, Methods, Results, etc.)
-        - 🔍 Semantic Scholar integration for paper search
-        - 💾 MongoDB storage of all interactions
-        - 🤖 Context-aware Q&A with Qwen2.5-3B
-        """)
+        # Footer - Quick Guide
+        with gr.Row(elem_classes=["glass-panel"]):
+            with gr.Column():
+                gr.Markdown("""
+                ### 📖 Quick Start Guide
+                
+                **1. Configure** → Set paper ID and title  
+                **2. Extract** → Upload PDF screenshot and process  
+                **3. Ask** → Chat with the AI about your paper
+                
+                ### ✨ Key Features
+                - 📝 Column-aware text extraction • 📊 Table & figure detection • 🎨 Highlight detection  
+                - 💜 Auto-highlighting • 🔍 Semantic Scholar search • 💾 MongoDB storage • 🤖 Context-aware Q&A
+                """)
     
     return demo
 
